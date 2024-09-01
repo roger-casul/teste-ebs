@@ -1,0 +1,75 @@
+name: Publicar Spot API para Elastic Beanstalk
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: self-hosted
+
+    steps:
+    - name: Configurar variáveis de publicação
+      run: |
+        $publishFolder = "c:\temp\publish\daas-api-prod"
+        $publishWorkspace = [System.IO.Path]::Combine($publishFolder, "workspace")
+        $appBundle = [System.IO.Path]::Combine($publishFolder, "daas-api-prod.zip")
+        $s3Bucket = "elasticbeanstalk-deploy-env"
+        $applicationName = "Daas-Api-Prod-App"
+        $environmentName = "Daas-api-prod-env"
+
+        # Exportar variáveis para os próximos passos
+        echo "::set-output name=publishFolder::$publishFolder"
+        echo "::set-output name=publishWorkspace::$publishWorkspace"
+        echo "::set-output name=appBundle::$appBundle"
+        echo "::set-output name=s3Bucket::$s3Bucket"
+        echo "::set-output name=applicationName::$applicationName"
+        echo "::set-output name=environmentName::$environmentName"
+      shell: powershell
+
+    - name: Limpar pasta de publicação
+      run: |
+        If (Test-Path "c:\temp\publish\daas-api-prod\workspace") {
+          Remove-Item "c:\temp\publish\daas-api-prod\workspace" -Confirm:$false -Recurse -Force -EA SilentlyContinue
+        }
+        If (Test-Path "c:\temp\publish\daas-api-prod\daas-api-prod.zip") {
+          Remove-Item "c:\temp\publish\daas-api-prod\daas-api-prod.zip" -Confirm:$false -Recurse -Force -EA SilentlyContinue
+        }
+      shell: powershell
+
+    - name: Publicar API
+      run: |
+        $publishDaasApiFolder = "c:\temp\publish\daas-api-prod\workspace\Daas.Api"
+        dotnet publish ./sistema-gerente-api/sistema-gerente-api.csproj -c Release -o $publishDaasApiFolder
+      shell: powershell
+
+    - name: Copiar manifesto de implantação
+      run: |
+        Copy-Item .\aws-windows-deployment-manifest.json "c:\temp\publish\daas-api-prod\workspace"
+      shell: powershell
+
+    - name: Compactar workspace de publicação
+      run: |
+        Compress-Archive -Path "c:\temp\publish\daas-api-prod\workspace\*" -DestinationPath "c:\temp\publish\daas-api-prod\daas-api-prod.zip" -Force
+      shell: powershell
+
+    - name: Publicar no S3
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: 'us-east-1'
+      run: |
+        Write-S3Object -BucketName "elasticbeanstalk-deploy-env" -File "c:\temp\publish\daas-api-prod\daas-api-prod.zip"
+      shell: powershell
+
+    - name: Atualizar ambiente Elastic Beanstalk
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: 'us-east-1'
+      run: |
+        $versionLabel = [System.DateTime]::Now.Ticks.ToString()
+        New-EBApplicationVersion -ApplicationName "Daas-Api-Prod-App" -VersionLabel $versionLabel -SourceBundle_S3Bucket "elasticbeanstalk-deploy-env" -SourceBundle_S3Key "daas-api-prod.zip" -Region us-east-1
+        Update-EBEnvironment -ApplicationName "Daas-Api-Prod-App" -EnvironmentName "Daas-api-prod-env" -VersionLabel $versionLabel -Region us-east-1
+      shell: powershell
